@@ -20,14 +20,18 @@
 int main(int argc, char* argv[])
 {
 	int fd = 0;
+	int cd = 0;
 	int stat = 0;
 	char buffer[1024];
 		memset(buffer, '\0', sizeof(buffer));
+	struct sockaddr_storage client_addr;
+	socklen_t client_addr_size = sizeof(client_addr);
+	
 	fd = tcp_listen(4000);
+	cd = accept(fd, (struct sockaddr *)&client_addr, &client_addr_size);
 
-	while(1)
+	while((stat = recv(cd, buffer, 1024, 0)) > 0)
 	{
-		stat = recv(fd, buffer, 1024, 0);
 		printf("%s", buffer);
 		memset(buffer, '\0', 1024);
 	}
