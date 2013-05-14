@@ -23,4 +23,5 @@ conditions.
 #ifndef XSHA1_H
 #define XSHA1_H
 void xsha1_calcHashBuf(const char* input, size_t length, uint32_t* result);
+#include "xsha1.c"
 #endif // XSHA1_H
