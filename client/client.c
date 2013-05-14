@@ -25,6 +25,7 @@
 
 // Make my syntax checker leave me alone.
 extern char *strdup(const char *s);
+extern char *strtok_r(char *str, const char *delim, char **saveptr);
 
 // The size in bytes of 1 file Segment. This is used for Torrents I create only.
 #define SEGMENT_SIZE  256
@@ -85,7 +86,7 @@ void assemble_torrent_pieces(MetaData* curTorrent)
     sprintf(segmentFilePath, "./temp/%s.part_%i", curTorrent->fileName, i);
     remove(segmentFilePath);
   }
-  
+
   fclose(finishedFilePtr);
 }
 
@@ -327,6 +328,156 @@ MetaData* create_meta_file(char* filePath, char* trackerURL)
   fclose(metaFP);
 
   return newTorrent;
+}
+
+int process_client_response(void* dataBuffer, const char* responseBuffer, char* hash)
+{
+  char myBuffer[1024];
+  char* curToken;
+  char* savePtr;
+
+  memset(myBuffer, '\0', 1024);
+  strcpy(myBuffer, responseBuffer);
+  curToken = strtok_r(myBuffer, "/", &savePtr);
+  if(strstr(curToken, "BUSY") != NULL)
+  {
+    printf("The Client was busy. >:-(\n");
+  }
+  else if(strstr(curToken, "UNAVAILABLE") != NULL)
+  {
+    printf("The client did not have the piece we are looking for. :'-(\n");
+  }
+  else if(strstr(curToken, "HAZ") != NULL)
+  {
+    curToken = strtok_r(NULL, "/", &savePtr);
+    if(verify_hashStr(curToken, hash))
+    {
+      printf("The Client has the Piece. :-D\n");
+      curToken = strtok_r(NULL, "/", &savePtr);
+      if(strstr(curToken, "START") != NULL)
+      {
+        //Can't use strtok because it could destroy the data. Instead, manually increment the pointer by sizeof("START/0");
+        curToken += (6 * sizeof(char));
+        memcpy(dataBuffer, curToken, ( SEGMENT_SIZE * sizeof(char) ) );
+        return TRUE;
+      }
+      else
+      {
+        printf("Malformed Transfer packet.\n");
+      }
+    }
+    else
+    {
+      printf("Unable to verify that this is the piece we are looking for. :-[\n");
+    }
+  }
+  else
+  {
+    printf("The Client sent a response that I don't understand. :-S\n");
+  }
+  return FALSE;
+}
+
+int i_am_busy()
+{
+  return FALSE;
+}
+
+void* find_piece(char* fileName, int pieceNumber, char* hash)
+{
+  char doneFilePath[512];
+  char segmentFilePath[512];
+  char* dataBuffer;
+  FILE* filePtr;
+
+  sprintf(doneFilePath, "./done/%s", fileName);
+  sprintf(segmentFilePath, "./temp/%s.piece_%i", fileName, pieceNumber);
+
+  filePtr = fopen(doneFilePath, "r");
+  if( filePtr )
+  {
+    // We have a finished copy of the file
+    dataBuffer = malloc( (SEGMENT_SIZE * sizeof(char)) );
+    memset(dataBuffer, '\0', SEGMENT_SIZE);
+
+    // Go to the correct spot in the file
+    unsigned long offset = ((unsigned long)pieceNumber * (unsigned long)SEGMENT_SIZE);
+    fseek(filePtr, offset, SEEK_SET);
+    
+    // Read the segment
+    int bytes_read = fread(dataBuffer, sizeof(char), SEGMENT_SIZE, filePtr);
+    fclose(filePtr);
+    return dataBuffer;
+  }
+  else
+  {
+    filePtr = fopen(segmentFilePath, "r");
+    if( filePtr )
+    {
+      // We have the segment we are looking for.
+      dataBuffer = malloc( (SEGMENT_SIZE * sizeof(char)) );
+      memset(dataBuffer, '\0', SEGMENT_SIZE);
+      int bytes_read = fread(dataBuffer, sizeof(char), SEGMENT_SIZE, filePtr);
+      fclose(filePtr);
+      return dataBuffer;
+    }
+  }
+  return NULL;
+}
+
+void process_client_request(char* responseBuffer, const char* requestBuffer)
+{
+  char myBuffer[512];
+  char* curToken;
+  char* savePtr;
+
+  strcpy(myBuffer, requestBuffer);
+  
+  // Use strtok_r to make it thread safe
+  curToken = strtok_r(myBuffer, "/", &savePtr);
+  if(strstr(curToken, "CANHAZ") != NULL)
+  {
+    // Am I busy?
+    // if yes -> respond with BUSY packet
+    if(i_am_busy())
+    {
+      sprintf(responseBuffer, "BUSY");
+    }
+    else
+    {
+      char fileName[255];
+      char hash[41];
+      int pieceNumber;
+      //  save the client info for reference
+      curToken = strtok_r(NULL, "/", &savePtr);
+      //  parse the filename
+      strcpy(fileName, strtok_r(NULL, "/", &savePtr));
+      //  parse the piecenumber
+      pieceNumber = atoi(strtok_r(NULL, "/", &savePtr));
+      //  parse the hash
+      strcpy(hash, strtok_r(NULL, "/", &savePtr));
+      //  Do I have this piece?
+      //    If yes -> send the data
+      //    If No -> send a 'no' packet
+      char* dataBuffer = find_piece(fileName, pieceNumber, hash);
+      if( dataBuffer != NULL )
+      {
+        int numCharsWritten = sprintf(responseBuffer,"HAZ/%s/START/",hash);
+        responseBuffer += ((numCharsWritten) * sizeof(char));
+        memcpy(responseBuffer, dataBuffer, ( SEGMENT_SIZE * sizeof(char) ) );
+        free(dataBuffer);
+      }
+      else
+      {
+        sprintf(responseBuffer,"HAZNOT/%s/%i/%s/",fileName, pieceNumber, hash);
+      }
+    }
+  }
+  else
+  {
+    printf("Another client sent a request that I cannot process.\n");
+  }
+
 }
 
 /**
