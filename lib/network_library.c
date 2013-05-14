@@ -24,6 +24,39 @@ extern FILE *popen();
 extern int getdomainname(char *name, size_t len);
 extern int gethostname(char *name, size_t len);
 extern void herror(const char *s);
+extern char *strtok_r(char *str, const char *delim, char **saveptr);
+
+void parse_host_string(char* buffer, char* name, int* portNum)
+{
+  char* savePtr;
+  char myBuffer[512];
+  strcpy(myBuffer, buffer);
+  strcpy(name, strtok_r(myBuffer, ":", &savePtr));
+  (*portNum) = atoi(strtok_r(NULL, ":", &savePtr));
+}
+
+void parse_host_info(const char* buffer, char* myHostName, int* myPort)
+{
+  // Read the port I am supposed to use off the command line
+  if(strstr(buffer, ":") == NULL)
+  {
+    // No Host name was supplied by the user. Attempt to figure out my Network Host name
+    getdomainname(myHostName, 255);
+    if(strstr(myHostName, "(none)") != NULL)
+    {
+      gethostname(myHostName, 255);
+    }
+
+    (*myPort) = atoi(buffer);
+  }
+  else
+  {
+    // Use the network Host name provided by the argument
+    char localServerStr[255];
+    strcpy(localServerStr, buffer);
+    parse_host_string(localServerStr, myHostName, myPort);
+  }
+}
 
 int hostname_to_ip(char * hostname , char* ip)
 {

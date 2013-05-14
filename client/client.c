@@ -40,13 +40,21 @@ typedef struct {
   unsigned long fileSize;
   unsigned long numSegments;
   unsigned long segmentSize;
-  //An array of booleans that tell us which segments are finished downloading
+  
+  // An array of booleans that tell us which segments are finished downloading
   int* segmentStatus;
-  //This is a 2D array of string representations of SHA1 hashes indexed on the segment number. SHA1 strings are always 40 characters.
+  
+  // A queue of segments to download
+  linkedListStruct* downloadQueue;
+
+  // This is a 2D array of string representations of SHA1 hashes indexed on the segment number. SHA1 strings are always 40 characters.
   char** hash;
 } MetaData;
 
-void assemble_torrent_pieces(MetaData* curTorrent)
+char myHostName[255];
+int myPort;
+
+void assemble_torrent_segments(MetaData* curTorrent)
 {
   char segmentFilePath[512];
   char finishedFilePath[512];
@@ -117,6 +125,24 @@ int verify_fileHash(FILE* filePtr, char* hash)
     return TRUE;
   }
   return FALSE;
+}
+
+int verify_bufferHash(void* buffer, char* hash)
+{
+  char bufferHashStr[41];
+  uint32_t hashBuffer[5];
+
+  xsha1_calcHashBuf(buffer, SEGMENT_SIZE, (uint32_t *)hashBuffer);
+  sprintf(bufferHashStr, "%08x%08x%08x%08x%08x", hashBuffer[0], hashBuffer[1], hashBuffer[2], hashBuffer[3], hashBuffer[4]);
+  //printf("buffer hash: %s\n", bufferHashStr);
+  //printf("arg hash   : %s\n", hash);
+  //verify the hash
+  if(verify_hashStr(bufferHashStr, hash))
+  {
+    return TRUE;
+  }
+  return FALSE;
+
 }
 
 void print_MetaData(MetaData* curTorrent, int printHash)
@@ -337,7 +363,7 @@ int process_client_response(void* dataBuffer, const char* responseBuffer, char* 
   char* savePtr;
 
   memset(myBuffer, '\0', 1024);
-  strcpy(myBuffer, responseBuffer);
+  memcpy(myBuffer, responseBuffer, sizeof(myBuffer));
   curToken = strtok_r(myBuffer, "/", &savePtr);
   if(strstr(curToken, "BUSY") != NULL)
   {
@@ -345,21 +371,30 @@ int process_client_response(void* dataBuffer, const char* responseBuffer, char* 
   }
   else if(strstr(curToken, "UNAVAILABLE") != NULL)
   {
-    printf("The client did not have the piece we are looking for. :'-(\n");
+    printf("The client did not have the segment we are looking for. :'-(\n");
   }
   else if(strstr(curToken, "HAZ") != NULL)
   {
     curToken = strtok_r(NULL, "/", &savePtr);
     if(verify_hashStr(curToken, hash))
     {
-      printf("The Client has the Piece. :-D\n");
+      printf("The Client has the segment. :-D\n");
       curToken = strtok_r(NULL, "/", &savePtr);
       if(strstr(curToken, "START") != NULL)
       {
-        //Can't use strtok because it could destroy the data. Instead, manually increment the pointer by sizeof("START/0");
-        curToken += (6 * sizeof(char));
-        memcpy(dataBuffer, curToken, ( SEGMENT_SIZE * sizeof(char) ) );
-        return TRUE;
+        // Can't use strtok because it could destroy the data. Instead, manually increment the pointer by sizeof("START/0");
+        curToken += 6;
+        memset(dataBuffer, '\0', SEGMENT_SIZE);
+        memcpy(dataBuffer, curToken, SEGMENT_SIZE );
+        if(verify_bufferHash(dataBuffer, hash))
+        { 
+          printf("Segment Hash successfully verified. :-)\n");
+          return TRUE;
+        }
+        else
+        {
+          printf("Segment Hash Verfication failed.\n");
+        }
       }
       else
       {
@@ -368,7 +403,7 @@ int process_client_response(void* dataBuffer, const char* responseBuffer, char* 
     }
     else
     {
-      printf("Unable to verify that this is the piece we are looking for. :-[\n");
+      printf("Unable to verify that this is the segment we are looking for. :-[\n");
     }
   }
   else
@@ -383,7 +418,7 @@ int i_am_busy()
   return FALSE;
 }
 
-void* find_piece(char* fileName, int pieceNumber, char* hash)
+void* find_segment(char* fileName, int segmentNumber, char* hash)
 {
   char doneFilePath[512];
   char segmentFilePath[512];
@@ -391,17 +426,17 @@ void* find_piece(char* fileName, int pieceNumber, char* hash)
   FILE* filePtr;
 
   sprintf(doneFilePath, "./done/%s", fileName);
-  sprintf(segmentFilePath, "./temp/%s.piece_%i", fileName, pieceNumber);
+  sprintf(segmentFilePath, "./temp/%s.segment_%i", fileName, segmentNumber);
 
   filePtr = fopen(doneFilePath, "r");
   if( filePtr )
   {
     // We have a finished copy of the file
-    dataBuffer = malloc( (SEGMENT_SIZE * sizeof(char)) );
+    dataBuffer = malloc( SEGMENT_SIZE );
     memset(dataBuffer, '\0', SEGMENT_SIZE);
 
     // Go to the correct spot in the file
-    unsigned long offset = ((unsigned long)pieceNumber * (unsigned long)SEGMENT_SIZE);
+    unsigned long offset = ((unsigned long)segmentNumber * (unsigned long)SEGMENT_SIZE);
     fseek(filePtr, offset, SEEK_SET);
     
     // Read the segment
@@ -415,7 +450,7 @@ void* find_piece(char* fileName, int pieceNumber, char* hash)
     if( filePtr )
     {
       // We have the segment we are looking for.
-      dataBuffer = malloc( (SEGMENT_SIZE * sizeof(char)) );
+      dataBuffer = malloc( SEGMENT_SIZE  );
       memset(dataBuffer, '\0', SEGMENT_SIZE);
       int bytes_read = fread(dataBuffer, sizeof(char), SEGMENT_SIZE, filePtr);
       fclose(filePtr);
@@ -425,11 +460,12 @@ void* find_piece(char* fileName, int pieceNumber, char* hash)
   return NULL;
 }
 
-void process_client_request(char* responseBuffer, const char* requestBuffer)
+int process_client_request(char* responseBuffer, const char* requestBuffer)
 {
   char myBuffer[512];
   char* curToken;
   char* savePtr;
+  int charCount = 0;
 
   strcpy(myBuffer, requestBuffer);
   
@@ -441,35 +477,36 @@ void process_client_request(char* responseBuffer, const char* requestBuffer)
     // if yes -> respond with BUSY packet
     if(i_am_busy())
     {
-      sprintf(responseBuffer, "BUSY");
+      charCount = sprintf(responseBuffer, "BUSY");
     }
     else
     {
       char fileName[255];
       char hash[41];
-      int pieceNumber;
+      int segmentNumber;
       //  save the client info for reference
       curToken = strtok_r(NULL, "/", &savePtr);
       //  parse the filename
       strcpy(fileName, strtok_r(NULL, "/", &savePtr));
-      //  parse the piecenumber
-      pieceNumber = atoi(strtok_r(NULL, "/", &savePtr));
+      //  parse the segmentnumber
+      segmentNumber = atoi(strtok_r(NULL, "/", &savePtr));
       //  parse the hash
       strcpy(hash, strtok_r(NULL, "/", &savePtr));
-      //  Do I have this piece?
+      //  Do I have this segment?
       //    If yes -> send the data
       //    If No -> send a 'no' packet
-      char* dataBuffer = find_piece(fileName, pieceNumber, hash);
+      char* dataBuffer = find_segment(fileName, segmentNumber, hash);
       if( dataBuffer != NULL )
       {
         int numCharsWritten = sprintf(responseBuffer,"HAZ/%s/START/",hash);
-        responseBuffer += ((numCharsWritten) * sizeof(char));
-        memcpy(responseBuffer, dataBuffer, ( SEGMENT_SIZE * sizeof(char) ) );
+        responseBuffer += numCharsWritten;
+        memcpy(responseBuffer, dataBuffer, SEGMENT_SIZE  );
         free(dataBuffer);
+        charCount = (numCharsWritten + SEGMENT_SIZE);
       }
       else
       {
-        sprintf(responseBuffer,"HAZNOT/%s/%i/%s/",fileName, pieceNumber, hash);
+        charCount = sprintf(responseBuffer,"HAZNOT/%s/%i/%s/",fileName, segmentNumber, hash);
       }
     }
   }
@@ -477,7 +514,32 @@ void process_client_request(char* responseBuffer, const char* requestBuffer)
   {
     printf("Another client sent a request that I cannot process.\n");
   }
+  //account for a final terminating character
+  charCount++;
+  return charCount;
+}
 
+void listen_for_requests()
+{
+  char requestBuffer[512];
+  char responseBuffer[1024];
+  int connfd;
+  int listenfd = tcp_listen(myPort);
+  printf("Listening for Requests.\n");
+  while(TRUE)
+  {
+    memset(requestBuffer, '\0', sizeof(requestBuffer));
+    memset(responseBuffer, '\0', sizeof(responseBuffer));
+
+    connfd = accept(listenfd, (struct sockaddr*)NULL, NULL);
+    read(connfd, requestBuffer, sizeof(requestBuffer)-1);
+    int bufferSize = process_client_request(responseBuffer, requestBuffer);
+    if(bufferSize > 0)
+    {
+      write(connfd, responseBuffer, bufferSize);
+    }
+    close(connfd);
+  }
 }
 
 /**
@@ -517,18 +579,63 @@ int main(int argc, char* argv[])
         print_MetaData(curTorrent, FALSE);
       }
     }
-    else if( (strstr(argv[1], "start")) )
+    else if( (strstr(argv[2], "start")) )
     {
-      if(argc != 3)
+      if(argc != 4)
       {
-        printf("Please enter the name of a torrent file!\n");
+        printf("Invalid arguments.\n  Proper usage:\n   client.o name:port start filename.trrnt\n");
         exit(1);
       }
       else
       {
+        parse_host_info(argv[1], myHostName, &myPort);
+        printf("Using HostName: %s:%i\n", myHostName, myPort);
+
         MetaData* curTorrent;
-        curTorrent = parse_meta_file(argv[2]);
+        curTorrent = parse_meta_file(argv[3]);
         // Start the download
+      }
+    }
+    else if( (strstr(argv[2], "listen")) )
+    {
+      if(argc != 3)
+      {
+        printf("Invalid arguments. Please enter a port and/or hostname.\n");
+        exit(1);
+      }
+      else
+      {
+        parse_host_info(argv[1], myHostName, &myPort);
+        printf("Using HostName: %s:%i\n", myHostName, myPort);
+        listen_for_requests();
+      }
+    }
+    else if( (strstr(argv[2], "test")) )
+    {
+      parse_host_info(argv[1], myHostName, &myPort);
+      printf("Using HostName: %s:%i\n", myHostName, myPort);
+      if( (strstr(argv[3], "request")) )
+      {
+        char *dataBuffer;
+        char responseBuffer[1024];
+
+        char requestString[512];
+        char targetHostName[255];
+        int targetPort;
+        int bytes_read;
+        dataBuffer = malloc(1024);
+        memset(dataBuffer, '\0', 1024);
+        memset(responseBuffer, '\0', sizeof(responseBuffer));
+        
+        parse_host_info(argv[4], targetHostName, &targetPort);
+        sprintf(requestString, "CANHAZ/testclient.com:3035/graduation_meme.jpg/0/8ee2eac74058b364395188a7a13fe381cebe2f59/");
+
+        int connfd = tcp_connect(targetHostName, targetPort);
+        write(connfd, requestString, strlen(requestString));
+        bytes_read = read(connfd, responseBuffer, sizeof(responseBuffer));
+        close(connfd);
+        printf("bytes_read: %i\n",bytes_read);
+        process_client_response(dataBuffer, responseBuffer, "8ee2eac74058b364395188a7a13fe381cebe2f59");
       }
     }
   }
