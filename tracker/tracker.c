@@ -82,56 +82,46 @@ void initialize_slot(client_struct* slot)
 }
 
 /**
-* process_request
-* @param  data_in  pointer to a client_struct
+ add_seeder
+ @param  host  hostname of seeder
+ @param  port  port number of seeder
+ @param  hash  hash to go with that client
 */
-void* process_request(void* cstruct_in)
+void add_seeder(char* host, char* port, char* hash)
 {
-	client_struct* me = (client_struct*)cstruct_in;
-	printf("[Thread %d]: New connection opened\n", me->id);
-	
-	// REQUEST PROCESSING CODE
-	// We just make a buffer and read into it until we see a newline
-	int chars_read = -1;
-	int buffer_size = 256;
-	int read_offset = 0;
-	char* read_buffer = malloc(buffer_size);
-	
-	memset(read_buffer, '\0', buffer_size);
-	
-	// Get the request
-	do
-	{
-		if((double)(buffer_size - read_offset) < (double)((double)buffer_size * 0.5))
-		{
-			read_buffer = realloc(read_buffer, buffer_size*2);
-			buffer_size = buffer_size*2;
-		}
-		chars_read = recv(me->socket, read_buffer + read_offset, buffer_size - read_offset, 0);
-		read_offset += chars_read;
-	} while(chars_read > 0);
-	if(chars_read == -1)
-		printf("[Thread %d]: recv() error: %s\n", me->id, strerror(errno));	
-	str_trim(read_buffer);
-	printf("[Thread %d]: (DEBUG) Trimmed input:\n\"%s\"\n", me->id, read_buffer);
-	
-	// Evaluate and handle the request
-	handle_request(read_buffer);
-	
-	// Close connection
-	printf("[Thread %d]: Connection closed.\n", me->id);
-	close(me->socket);
-	me->done = true;
-	return NULL;
+	printf("Adding seeder: (%s:%s, %s)\n", host, port, hash);
+}
+
+/**
+ remove_seeder
+ @param  host  hostname of seeder
+ @param  port  port number of seeder
+*/
+void remove_seeder(char* host, char* port)
+{
+	printf("Removing seeder: (%s:%s)\n", host, port);
+}
+
+/**
+ send_response
+ @param	 socket  connection socket to send on
+ @param  count   number of seeders to send, -1 = all, 0 = just "SUCCESS"
+*/
+void send_response(int socket, int count)
+{
+	printf("Response sent.\n");
 }
 
 /**
 * handle_request
 * @param  input_string  Unmodified string version of the request
 */
-void handle_request(char* input_string)
+void handle_request(client_struct* me, char* input_string)
 {
-	char* word, host, port, hash;
+	char* word;
+	char* host;
+	char* port;
+	char* hash;
 	char* r[2];
 	
 	word = strtok_r(input_string, "/", &r[0]);
@@ -174,34 +164,47 @@ void handle_request(char* input_string)
 }
 
 /**
- add_seeder
- @param  host  hostname of seeder
- @param  port  port number of seeder
- @param  hash  hash to go with that client
+* process_request
+* @param  data_in  pointer to a client_struct
 */
-void add_seeder(char* host, char* port, char* hash)
+void* process_request(void* cstruct_in)
 {
-
-}
-
-/**
- remove_seeder
- @param  host  hostname of seeder
- @param  port  port number of seeder
-*/
-void remove_seeder(char* host, char* port)
-{
-
-}
-
-/**
- send_response
- @param	 socket  connection socket to send on
- @param  count   number of seeders to send, -1 = all, 0 = just "SUCCESS"
-*/
-void send_response(int socket, int count)
-{
+	client_struct* me = (client_struct*)cstruct_in;
+	printf("[Thread %d]: New connection opened\n", me->id);
 	
+	// REQUEST PROCESSING CODE
+	// We just make a buffer and read into it until we see a newline
+	int chars_read = -1;
+	int buffer_size = 256;
+	int read_offset = 0;
+	char* read_buffer = malloc(buffer_size);
+	
+	memset(read_buffer, '\0', buffer_size);
+	
+	// Get the request
+	do
+	{
+		if((double)(buffer_size - read_offset) < (double)((double)buffer_size * 0.5))
+		{
+			read_buffer = realloc(read_buffer, buffer_size*2);
+			buffer_size = buffer_size*2;
+		}
+		chars_read = recv(me->socket, read_buffer + read_offset, buffer_size - read_offset, 0);
+		read_offset += chars_read;
+	} while(chars_read > 0);
+	if(chars_read == -1)
+		printf("[Thread %d]: recv() error: %s\n", me->id, strerror(errno));	
+	str_trim(read_buffer);
+	printf("[Thread %d]: (DEBUG) Trimmed input:\n\"%s\"\n", me->id, read_buffer);
+	
+	// Evaluate and handle the request
+	handle_request(me, read_buffer);
+	
+	// Close connection
+	printf("[Thread %d]: Connection closed.\n", me->id);
+	close(me->socket);
+	me->done = true;
+	return NULL;
 }
 
 // Debug function for printing the linked list
