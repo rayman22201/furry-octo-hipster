@@ -1,0 +1,58 @@
+/**
+* @File random.c
+* CS 470 Final Project
+* Patrick Anderson
+* Defines some various small utility functions, for data conversion and other pesky issues
+*/
+#include <string.h>
+
+// Converts a numeric string to an int ... and non-numeric strings to interesting numbers :)
+int str_to_int(char* str)
+{
+	int c = 0;
+	int total = 0;
+	for(c = 0; c < strlen(str); c++)
+	{
+		total *= 10; // Shift all digits left one place
+		total += str[c]-48; // Add this digit on to the end
+	}
+	return total;
+}
+
+// Removes whitespace from the left and right sides of the string
+void str_trim(char* str)
+{
+	// Define "whitespace" as spaces, tabs, or newlines
+	const char space = ' ';
+	const char tab = '\t';
+	const char newline = '\n';
+	
+	// Do the right side first, this is easy
+	int c = strlen(str) - 1;
+	while(str[c] == space || str[c] == tab || str[c] == newline)
+	{
+		str[c] = '\0';
+		c--;
+	}
+	
+	// Do the left side second - this is hard
+	int count = 0;
+	c = 0;
+	int len = strlen(str);
+	while(str[c] == space || str[c] == tab || str[c] == newline)
+	{
+		count++;
+		c++;
+	}
+	if(count != 0)
+	{
+		for(c = count; c < len; c++)
+		{
+			str[c-count] = str[c];
+		}
+		for(c = 0; c <= count; c++)
+		{
+			str[len-c] = '\0';
+		}
+	}
+}
