@@ -94,7 +94,7 @@ int tcp_connect(char* serverName, int serverPort)
   if(sockfd < 0)
   {
     printf("\n Error : Could not create socket \n");
-    exit(1);
+    //exit(1);
     return -1;
   }
 
@@ -106,14 +106,14 @@ int tcp_connect(char* serverName, int serverPort)
   if(inet_pton(AF_INET, serverIP, &serv_addr.sin_addr)<=0)
   {
     printf("\n inet_pton error occured\n");
-    exit(1);
+    //exit(1);
     return -1;
   }
 
   if( connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
   {
     printf("\n Error : Connect Failed \n");
-    exit(1);
+    //exit(1);
     return -1;
   }
 

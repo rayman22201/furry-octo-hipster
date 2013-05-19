@@ -26,6 +26,7 @@ typedef struct
   linkedListNode* head;
   linkedListNode* tail; // I'm cheating, but screw it :-P
   linkedListNode* curNode; // Used to implement an iterator.
+  unsigned int numNodes;
   pthread_mutex_t lock;
 } linkedListStruct;
 
@@ -42,6 +43,8 @@ linkedListStruct* linkedList_newList()
   newList->head = newHead;
   newList->curNode = newHead;
   newList->tail = newHead;
+
+  newList->numNodes = 0;
 
   return newList;
 }
@@ -84,6 +87,7 @@ linkedListNode* linkedList_addNode(linkedListStruct* cur_list, void* newData)
 
   tailNode->nextNode = newNode;
   cur_list->tail = newNode;
+  cur_list->numNodes++;
 
   return newNode;
 }
@@ -162,6 +166,10 @@ void linkedList_removeNode(linkedListStruct* cur_list, linkedListNode* nodeToDel
   linkedListNode* curNode;
   prevNode = NULL;
   curNode = NULL;
+
+  linkedList_reset_iterator(cur_list);
+  prevNode = cur_list->head;
+
   do
   {
     curNode = linkedList_iterate(cur_list);
@@ -176,6 +184,7 @@ void linkedList_removeNode(linkedListStruct* cur_list, linkedListNode* nodeToDel
         cur_list->tail = prevNode;
       }
       free(curNode);
+      cur_list->numNodes--;
       break;
     }
     prevNode = curNode;
@@ -234,6 +243,7 @@ void linkedList_findAndRemoveNode(linkedListStruct* cur_list, void* dataToFind)
             cur_list->tail = prevNode;
           }
           free(curNode);
+          cur_list->numNodes--;
           break;
         }
       }
@@ -273,6 +283,7 @@ void linkedList_freeAllButFirst(linkedListStruct* cur_list)
     } while(curNode != NULL);
     firstNode->nextNode = NULL;
     cur_list->tail = firstNode;
+    cur_list->numNodes = 1;
   }
 }
 
@@ -280,7 +291,7 @@ void linkedList_freeAllButFirst_ts(linkedListStruct* cur_list)
 {
   pthread_mutex_lock(&(cur_list->lock));
   linkedList_freeAllButFirst(cur_list);
-  pthread_mutex_lock(&(cur_list->lock));
+  pthread_mutex_unlock(&(cur_list->lock));
 }
 
 void* linkedList_pop(linkedListStruct* cur_list)
@@ -290,13 +301,6 @@ void* linkedList_pop(linkedListStruct* cur_list)
     // The true head is a placeholder, so get the real Head, which is the second Node.
     linkedListNode* realHead = cur_list->head->nextNode;
     void* retVal = realHead->data;
-
-    // Make sure the iterator doesn't break;
-    if(cur_list->curNode == realHead)
-    {
-      linkedList_iterate(cur_list);
-    }
-
     linkedList_removeNode(cur_list, realHead);
     return retVal;
   }
@@ -307,7 +311,7 @@ void* linkedList_pop_ts(linkedListStruct* cur_list)
 {
   pthread_mutex_lock(&(cur_list->lock));
   void* retVal = linkedList_pop(cur_list);
-  pthread_mutex_lock(&(cur_list->lock));
+  pthread_mutex_unlock(&(cur_list->lock));
   return retVal;
 }
 
