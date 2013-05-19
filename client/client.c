@@ -681,6 +681,12 @@ int parse_tracker_response(char* responseBuffer, int* numSeeders, char*** seeder
     // Filename
     strtok_r(NULL, "/", &savePtr);
     (*numSeeders) = atoi(strtok_r(NULL, "/", &savePtr));
+    if((*numSeeders) < 1)
+    {
+      printf("No Seeders Found. \n");
+      exit(0);
+      return FALSE;
+    }
     
     (*seederNames) = malloc(sizeof(char*) * (*numSeeders));  
     (*seederPorts) = malloc(sizeof(int) * (*numSeeders));
