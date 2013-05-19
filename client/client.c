@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <dirent.h>
 
 // Custom Libraries.
 #include "../lib/sha1/xsha1.h"
@@ -36,7 +37,8 @@ extern char *strtok_r(char *str, const char *delim, char **saveptr);
 
 typedef struct {
   char fileName[255];
-  char trackerURL[255];
+  char trackerName[255];
+  int  trackerPort;
   unsigned long fileSize;
   unsigned long numSegments;
   unsigned long segmentSize;
@@ -51,8 +53,19 @@ typedef struct {
   char** hash;
 } MetaData;
 
+typedef struct {
+  MetaData* torrent;
+  linkedListNode* threadPoolID;
+  char targetClientName[255];
+  int targetClientPort;
+} ThreadArgs;
+
 char myHostName[255];
 int myPort;
+
+unsigned int nextThreadPoolID;
+linkedListStruct* threadPool;
+pthread_cond_t  threadPoolCondition;
 
 void assemble_torrent_segments(MetaData* curTorrent)
 {
@@ -66,12 +79,22 @@ void assemble_torrent_segments(MetaData* curTorrent)
   //open finished file for writing
   memset(finishedFilePath, '\0', 512);
   sprintf(finishedFilePath, "./done/%s", curTorrent->fileName);
+
+  //first check if the file was already downloaded
+  finishedFilePtr = fopen(finishedFilePath, "r");
+  if(finishedFilePtr)
+  {
+    printf("File Already Downloaded!\n");
+    fclose(finishedFilePtr);
+    exit(1);
+  }
+
   finishedFilePtr = fopen(finishedFilePath, "w");
 
   for(i = 0; i < curTorrent->numSegments; i++)
   {
     memset(segmentFilePath, '\0', 512);
-    sprintf(segmentFilePath, "./temp/%s.part_%i", curTorrent->fileName, i);
+    sprintf(segmentFilePath, "./temp/%s.segment_%i", curTorrent->fileName, i);
     segmentFilePtr = fopen(segmentFilePath, "r");
     if(segmentFilePtr)
     {
@@ -81,6 +104,8 @@ void assemble_torrent_segments(MetaData* curTorrent)
     }
     else
     {
+      fclose(finishedFilePtr);
+      remove(finishedFilePath);
       printf("Unable to open %s for file assembly.\n", segmentFilePath);
       exit(1);
     }
@@ -91,7 +116,7 @@ void assemble_torrent_segments(MetaData* curTorrent)
   for(i = 0; i < curTorrent->numSegments; i++)
   {
     memset(segmentFilePath, '\0', 512);
-    sprintf(segmentFilePath, "./temp/%s.part_%i", curTorrent->fileName, i);
+    sprintf(segmentFilePath, "./temp/%s.segment_%i", curTorrent->fileName, i);
     remove(segmentFilePath);
   }
 
@@ -149,7 +174,7 @@ void print_MetaData(MetaData* curTorrent, int printHash)
 {
   printf("Parsed File:\n");
   printf("  Filename:%s\n", curTorrent->fileName);
-  printf("  Tracker URL:%s\n", curTorrent->trackerURL);
+  printf("  Tracker URL:%s:%i\n", curTorrent->trackerName, curTorrent->trackerPort);
   printf("  FileSize:%lu\n", curTorrent->fileSize);
   printf("  numSegments:%lu\n", curTorrent->numSegments);
   printf("  segmentSize:%lu\n", curTorrent->segmentSize);
@@ -220,7 +245,11 @@ MetaData* parse_meta_file(char* filePath)
   fread(fileBuffer, sizeof(char), fileStats.st_size, filePtr);
 
   strcpy(torrentData->fileName, strtok(fileBuffer, "\n"));
-  strcpy(torrentData->trackerURL, strtok(NULL, "\n"));
+  
+  char trackerURL[255]; 
+  strcpy(trackerURL, strtok(NULL, "\n"));
+  parse_host_info(trackerURL, torrentData->trackerName, &(torrentData->trackerPort));
+
   torrentData->fileSize = strtoul(strtok(NULL, "\n"), NULL, 0);
   torrentData->numSegments = strtoul(strtok(NULL, "\n"), NULL, 0);
   torrentData->segmentSize = strtoul(strtok(NULL, "\n"), NULL, 0);
@@ -246,6 +275,7 @@ MetaData* parse_meta_file(char* filePath)
     curHash = malloc(sizeof(char) * 41);
     strcpy(curHash, strtok(NULL, "\n"));
     torrentData->hash[i] = curHash;
+    torrentData->segmentStatus[i] = FALSE;
     if(done == TRUE)
     {
       torrentData->segmentStatus[i] = TRUE;
@@ -253,7 +283,7 @@ MetaData* parse_meta_file(char* filePath)
     else
     {
       memset(doneFilePath, '\0', 512);
-      sprintf(doneFilePath, "./temp/%s.part_%i", torrentData->fileName, i);
+      sprintf(doneFilePath, "./temp/%s.segment_%i", torrentData->fileName, i);
       doneFilePtr = fopen(doneFilePath, "r");
       if( doneFilePtr )
       {
@@ -311,7 +341,11 @@ MetaData* create_meta_file(char* filePath, char* trackerURL)
   strcpy(tempBuffer,filePath);
   strcpy(newTorrent->fileName, basename(tempBuffer));
 
-  strcpy(newTorrent->trackerURL, trackerURL);
+  char trackerName[255];
+  int trackerPort;
+  parse_host_info(trackerURL, trackerName, &trackerPort);
+  strcpy(newTorrent->trackerName, trackerName);
+  newTorrent->trackerPort = trackerPort;
 
   // Cut off any extension the file may have
   memset(tempBuffer, '\0',255);
@@ -336,7 +370,7 @@ MetaData* create_meta_file(char* filePath, char* trackerURL)
   metaFP = fopen(metaFilePath, "w");
   
   //write the meta file
-  fprintf(metaFP, "%s\n%s\n%lu\n%lu\n%i\n",newTorrent->fileName, newTorrent->trackerURL, newTorrent->fileSize, newTorrent->numSegments, SEGMENT_SIZE);
+  fprintf(metaFP, "%s\n%s:%i\n%lu\n%lu\n%i\n",newTorrent->fileName, newTorrent->trackerName, newTorrent->trackerPort, newTorrent->fileSize, newTorrent->numSegments, SEGMENT_SIZE);
 
   //Open the file
   filePtr = fopen(filePath, "r");
@@ -378,7 +412,7 @@ int process_client_response(void* dataBuffer, const char* responseBuffer, char* 
     curToken = strtok_r(NULL, "/", &savePtr);
     if(verify_hashStr(curToken, hash))
     {
-      printf("The Client has the segment. :-D\n");
+      printf("    The Client has the segment. :-D\n");
       curToken = strtok_r(NULL, "/", &savePtr);
       if(strstr(curToken, "START") != NULL)
       {
@@ -388,12 +422,12 @@ int process_client_response(void* dataBuffer, const char* responseBuffer, char* 
         memcpy(dataBuffer, curToken, SEGMENT_SIZE );
         if(verify_bufferHash(dataBuffer, hash))
         { 
-          printf("Segment Hash successfully verified. :-)\n");
+          printf("    Segment Hash successfully verified. :-)\n");
           return TRUE;
         }
         else
         {
-          printf("Segment Hash Verfication failed.\n");
+          printf("    Segment Hash Verfication failed.\n");
         }
       }
       else
@@ -544,31 +578,276 @@ void listen_for_requests()
 
 void prepare_download_queue(MetaData* curTorrent)
 {
-  curTorrent->downloadQueue = linkedList_newList();
+  curTorrent->downloadQueue = linkedList_newList_ts();
   
   int i;
   int* pieceNumber;
   for(i = 0; i < curTorrent->numSegments; i++)
   {
-    pieceNumber = malloc(sizeof(int));
-    (*pieceNumber) = i;
     if( curTorrent->segmentStatus[i] == FALSE )
     {
+      pieceNumber = malloc(sizeof(int));
+      (*pieceNumber) = i;
       linkedList_addNode(curTorrent->downloadQueue, pieceNumber);
     }
   }
 }
 
-
-
-void manage_torrent_download(MetaData* curTorrent)
+int save_segment_to_file(char* dataBuffer, char* fileName, int segmentNumber)
 {
+  FILE* filePtr;
+  char segmentFilePath[512];
+  memset(segmentFilePath,'\0',sizeof(segmentFilePath));
+  sprintf(segmentFilePath, "./temp/%s.segment_%i", fileName, segmentNumber);
+  filePtr = fopen(segmentFilePath, "w");
+  if( filePtr )
+  {
+    fwrite(dataBuffer, sizeof(char), SEGMENT_SIZE, filePtr);
+    fclose(filePtr);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+void* request_listener_thread(void* arg)
+{
+  listen_for_requests();
+  pthread_exit(NULL);
+}
+
+void* download_worker_thread(void* arg)
+{
+  ThreadArgs* myArgs = (ThreadArgs*)arg;
+  int* segmentNumber;
+  char *dataBuffer;
+  char responseBuffer[1024];
+
+  char requestString[512];
+  int bytes_read;
+  int response;
+  dataBuffer = malloc(1024);
+
+  while( linkedList_isEmptyList_ts(myArgs->torrent->downloadQueue) == FALSE )
+  {
+    segmentNumber = (int*)linkedList_pop_ts(myArgs->torrent->downloadQueue);
+    printf("Downloading Segment: %i of %lu\n", (*segmentNumber), myArgs->torrent->numSegments);
+    memset(dataBuffer, '\0', 1024);
+    memset(responseBuffer, '\0', sizeof(responseBuffer));
+    
+    sprintf(requestString, "CANHAZ/%s:%i/%s/%i/%s/", myHostName, myPort, myArgs->torrent->fileName, (*segmentNumber), myArgs->torrent->hash[(*segmentNumber)]);
+
+    response = FALSE;
+    int connfd = tcp_connect(myArgs->targetClientName, myArgs->targetClientPort);
+    if(connfd != -1)
+    {
+      write(connfd, requestString, strlen(requestString));
+      bytes_read = read(connfd, responseBuffer, sizeof(responseBuffer));
+      close(connfd);
+      response = process_client_response(dataBuffer, responseBuffer, myArgs->torrent->hash[(*segmentNumber)]);
+    }
+
+    if(response == FALSE)
+    {
+      linkedList_addNode_ts(myArgs->torrent->downloadQueue, segmentNumber);
+      pthread_mutex_lock(&(threadPool->lock));
+      linkedList_removeNode(threadPool, myArgs->threadPoolID);
+      pthread_cond_signal(&threadPoolCondition);
+      pthread_mutex_unlock(&(threadPool->lock));
+      pthread_exit(NULL);
+    }
+    else
+    {
+      // Save the dataBuffer to a file
+      save_segment_to_file(dataBuffer, myArgs->torrent->fileName, (*segmentNumber));
+      free(segmentNumber);    
+    }
+  }
+
+  // Wake up the manager thread so that it can put all the pieces together.
+  pthread_mutex_lock(&(threadPool->lock));
+  linkedList_removeNode(threadPool, myArgs->threadPoolID);
+  pthread_cond_signal(&threadPoolCondition);
+  pthread_mutex_unlock(&(threadPool->lock));
+  pthread_exit(NULL);
+}
+
+int parse_tracker_response(char* responseBuffer, int* numSeeders, char*** seederNames, int** seederPorts)
+{
+  char* curToken;
+  char* savePtr;
+  curToken = strtok_r(responseBuffer, "/", &savePtr);
+  if(strstr(curToken, "SEEDERS"))
+  {
+    // Filename
+    strtok_r(NULL, "/", &savePtr);
+    (*numSeeders) = atoi(strtok_r(NULL, "/", &savePtr));
+    
+    (*seederNames) = malloc(sizeof(char*) * (*numSeeders));  
+    (*seederPorts) = malloc(sizeof(int) * (*numSeeders));
+    char* curSeederName;
+
+    int i;
+    for(i = 0; i < (*numSeeders); i++)
+    {
+      curSeederName = malloc(sizeof(char) * 512);
+      curToken = strtok_r(NULL, "/", &savePtr);
+      parse_host_info(curToken, curSeederName, &((*seederPorts)[i]));
+      (*seederNames)[i] = curSeederName;
+    }
+    return TRUE;
+  }
+  else
+  {
+    printf("Invalid Tracker response");
+  }
+  return FALSE;
+}
+
+int broadcast_file_to_tracker(char* fileName, char* trackerName, int trackerPort)
+{
+  char trackerRequestStr[512];
+  char trackerResponseStr[512];
+
+  // Become a seeder
+  memset(trackerRequestStr, '\0', sizeof(trackerRequestStr));
+  sprintf(trackerRequestStr, "INIT/%s:%i/%s", myHostName, myPort, fileName);
+
+  int connfd = tcp_connect(trackerName, trackerPort);
+  if(connfd == -1)
+  {
+    printf("failed to connect to the tracker.\n");
+    return FALSE;
+  }
+
+  write(connfd, trackerRequestStr, strlen(trackerRequestStr));
+  read(connfd, trackerResponseStr, (sizeof(trackerResponseStr) - 1) );
+  close(connfd);
+
+  if(strstr(trackerResponseStr, "SUCCESS") == NULL)
+  {
+    printf("Tracker sent an invalid response to our seed request for %s.\n", fileName);
+  }
+  else
+  {
+    printf("Now Seeding %s\n", fileName);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+void* download_manager_thread(void* arg)
+{
+  MetaData* curTorrent = (MetaData*)arg;
   prepare_download_queue(curTorrent);
-  //while (torrent not done) --> This has to be a periodic check.
-  //                            The thread has to sleep and just wake up and check every once and a while after the first go.
-  //  Ask the tracker for some seeders
-  //  spin off a thread for each seeder
-  //  if threads < 2, ask for more seeders
+
+  threadPool = linkedList_newList_ts();
+  pthread_cond_init(&threadPoolCondition, NULL);
+  nextThreadPoolID = 0;
+
+  int connfd;
+  int threadsToAdd;
+  char** targetClientName;
+  int* targetClientPort;
+
+  char trackerRequestStr[512];
+  char trackerResponseStr[512];
+
+  // While we still have parts to download. _ts = thread-safe check
+  while(linkedList_isEmptyList_ts(curTorrent->downloadQueue) == FALSE)
+  {
+    pthread_mutex_lock(&(threadPool->lock));
+    if( threadPool->numNodes < 1 )
+    {
+
+      memset(trackerRequestStr, '\0', sizeof(trackerRequestStr));
+      memset(trackerResponseStr, '\0', sizeof(trackerResponseStr));
+      // First tracker request
+      if(nextThreadPoolID == 0)
+      {
+        sprintf(trackerRequestStr, "STARTED/%s:%i/%s", myHostName, myPort, curTorrent->fileName);
+      }
+      else
+      {
+        sprintf(trackerRequestStr, "NEEDY/%s:%i/%s", myHostName, myPort, curTorrent->fileName);
+      }
+      //Ask the tracker for some seeders
+      connfd = tcp_connect(curTorrent->trackerName, curTorrent->trackerPort);
+      write(connfd, trackerRequestStr, strlen(trackerRequestStr));
+      read(connfd, trackerResponseStr, sizeof(trackerResponseStr));
+      close(connfd);
+      parse_tracker_response(trackerResponseStr, &threadsToAdd, &targetClientName, &targetClientPort);    
+
+      //spin off a thread for each seeder
+      int* threadPoolID;
+      pthread_t threadID;
+      ThreadArgs* newArg;
+      linkedListNode* threadPoolNode;
+
+      int i;
+      for(i = 0; i < threadsToAdd; i++)
+      {
+        nextThreadPoolID ++;
+        newArg = malloc(sizeof(ThreadArgs));
+        threadPoolID = malloc(sizeof(int));
+        (*threadPoolID) = nextThreadPoolID;
+        threadPoolNode = linkedList_addNode(threadPool, threadPoolID);
+        newArg->threadPoolID = threadPoolNode;
+        newArg->torrent = curTorrent;
+        strcpy(newArg->targetClientName, targetClientName[i]);
+        free(targetClientName[i]);
+        newArg->targetClientPort = targetClientPort[i];
+
+        pthread_create( &threadID, NULL, download_worker_thread, (void*)newArg);
+
+      }
+
+      free(targetClientName);
+      free(targetClientPort);
+    }
+    pthread_cond_wait(&threadPoolCondition, &(threadPool->lock));
+    pthread_mutex_unlock(&(threadPool->lock));
+  }
+
+  // Tell the tracker we are done
+  memset(trackerRequestStr, '\0', sizeof(trackerRequestStr));
+  sprintf(trackerRequestStr, "STOPPED/%s:%i", myHostName, myPort);
+  connfd = tcp_connect(curTorrent->trackerName, curTorrent->trackerPort);
+  write(connfd, trackerRequestStr, strlen(trackerRequestStr));
+  close(connfd);
+
+  assemble_torrent_segments(curTorrent);
+  printf("%s Has finished Downloading!\n\n", curTorrent->fileName);
+
+  // Become a seeder
+  broadcast_file_to_tracker(curTorrent->fileName, curTorrent->trackerName, curTorrent->trackerPort);
+
+  pthread_exit(NULL);
+}
+
+void broadcast_finished_files(char* trackerName, int trackerPort)
+{
+  DIR *dirPtr;
+  struct dirent *curFile;
+  dirPtr = opendir ("./done");
+
+  if (dirPtr != NULL)
+  {
+    curFile = readdir(dirPtr);
+    while (curFile != NULL)
+    {
+      if( strcspn(curFile->d_name, ".") > 0 )
+      {
+        broadcast_file_to_tracker(curFile->d_name, trackerName, trackerPort);
+      }
+      curFile = readdir(dirPtr);
+    }
+    (void) closedir (dirPtr);
+  }
+  else
+  {
+    perror ("Couldn't open the directory");
+  }
+  return;
 }
 
 /**
@@ -622,12 +901,24 @@ int main(int argc, char* argv[])
 
         MetaData* curTorrent;
         curTorrent = parse_meta_file(argv[3]);
+        
+        pthread_t threads[2];
+        // Listen for requests
+        pthread_create(&(threads[0]), NULL, request_listener_thread, NULL);
         // Start the download
+        pthread_create(&(threads[1]), NULL, download_manager_thread, (void*)curTorrent);
+        
+        //sync on the threads
+        pthread_join(threads[0], NULL);
+        pthread_join(threads[1], NULL);
+
+        linkedList_free_ts(threadPool);
+        pthread_cond_destroy(&threadPoolCondition);
       }
     }
     else if( (strstr(argv[2], "listen")) )
     {
-      if(argc != 3)
+      if( !(argc == 3 || argc == 5) )
       {
         printf("Invalid arguments. Please enter a port and/or hostname.\n");
         exit(1);
@@ -636,35 +927,16 @@ int main(int argc, char* argv[])
       {
         parse_host_info(argv[1], myHostName, &myPort);
         printf("Using HostName: %s:%i\n", myHostName, myPort);
-        listen_for_requests();
-      }
-    }
-    else if( (strstr(argv[2], "test")) )
-    {
-      parse_host_info(argv[1], myHostName, &myPort);
-      printf("Using HostName: %s:%i\n", myHostName, myPort);
-      if( (strstr(argv[3], "request")) )
-      {
-        char *dataBuffer;
-        char responseBuffer[1024];
-
-        char requestString[512];
-        char targetHostName[255];
-        int targetPort;
-        int bytes_read;
-        dataBuffer = malloc(1024);
-        memset(dataBuffer, '\0', 1024);
-        memset(responseBuffer, '\0', sizeof(responseBuffer));
         
-        parse_host_info(argv[4], targetHostName, &targetPort);
-        sprintf(requestString, "CANHAZ/testclient.com:3035/graduation_meme.jpg/4/680c4ed32eaea68587d18b5d43cb947f2e4c63a4/");
+        if( (argc == 5 && strstr(argv[3], "tracker") != NULL) )
+        {
+            char trackerName[255];
+            int trackerPort;
+            parse_host_info(argv[4], trackerName, &trackerPort);
+            broadcast_finished_files(trackerName, trackerPort);
+        }
 
-        int connfd = tcp_connect(targetHostName, targetPort);
-        write(connfd, requestString, strlen(requestString));
-        bytes_read = read(connfd, responseBuffer, sizeof(responseBuffer));
-        close(connfd);
-        printf("bytes_read: %i\n",bytes_read);
-        process_client_response(dataBuffer, responseBuffer, "680c4ed32eaea68587d18b5d43cb947f2e4c63a4");
+        listen_for_requests();
       }
     }
   }
