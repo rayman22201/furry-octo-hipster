@@ -184,7 +184,7 @@ void add_seeder(client_struct* me, char* host, char* port, char* hash)
 	if(d != NULL)
 		while(d->next != NULL)
 		{
-			if(strcmp(d->host, host) == 0 && strcmp(d->port, port))
+			if(strcmp(d->host, host) == 0 && strcmp(d->port, port) == 0)
 				return;
 			else
 				d = d->next;
@@ -275,7 +275,7 @@ void send_response(client_struct* me, int sr_mode, char* hash)
 		char msg[8];
 		strcpy(msg, "SUCCESS");
 		write(me->socket, msg, sizeof(msg));
-		printf("\t[%d]: 'SUCCESS' sent to client.\n", me->id);
+		printf("\t[%d]: Sent: '%s'\n", me->id, msg);
 	}
 	else if(sr_mode == SR_SEEDERS)
 	{
@@ -302,7 +302,7 @@ void send_response(client_struct* me, int sr_mode, char* hash)
 					}
 					
 					// If there are less than MAX_RETURNED_SEEDERS, send them all
-					if(seeder_count < MAX_RETURNED_SEEDERS)
+					if(seeder_count <= MAX_RETURNED_SEEDERS)
 					{
 						char msg[2048]; memset(msg, '\0', sizeof(msg));
 						char seeder_count_str[64]; memset(seeder_count_str, '\0', sizeof(seeder_count_str));
@@ -323,13 +323,16 @@ void send_response(client_struct* me, int sr_mode, char* hash)
 						}
 						
 						write(me->socket, msg, sizeof(msg));
+						printf("\t[%d]: Sent: '%s'\n", me->id, msg);
 					}
 					// Otherwise, pick random ones and send them
 					else
 					{
 						srand(time(NULL));
-						int skips = rand() % (seeder_count - MAX_RETURNED_SEEDERS);
+						int skips = MAX_RETURNED_SEEDERS - seeder_count;
 						char msg[2048]; memset(msg, '\0', sizeof(msg));
+						
+						sprintf(msg, "SEEDERS/%s/%d", hash, MAX_RETURNED_SEEDERS);
 						
 						s = h->adjacent;
 						while(s != NULL)
@@ -347,6 +350,7 @@ void send_response(client_struct* me, int sr_mode, char* hash)
 							s = s->next;
 						}
 						write(me->socket, msg, sizeof(msg));
+						printf("\t[%d]: Sent: '%s'\n", me->id, msg);
 					}
 				}
 				// Otherwise...
@@ -358,12 +362,12 @@ void send_response(client_struct* me, int sr_mode, char* hash)
 					strcat(msg, hash);
 					strcat(msg, "/0");
 					write(me->socket, msg, sizeof(msg));
+					printf("\t[%d]: Sent: '%s'\n", me->id, msg);
 				}
 				break;
 			}
+			h = h->next;
 		}
-		
-		printf("\t[%d]: List of %d seeders sent to client.\n", me->id, seeder_count);
 	}
 	else
 		printf("ERROR: invalid value for sr_mode\n");
@@ -381,6 +385,7 @@ void handle_request(client_struct* me, char* input_string)
 	char* hash;
 	char* r[2];
 	
+	printf("\t[%d]: Received: '%s'\n", me->id, input_string);
 	word = strtok_r(input_string, "/", &r[0]);
 	
 	if(strcmp(word, "STARTED") == 0)
@@ -390,8 +395,8 @@ void handle_request(client_struct* me, char* input_string)
 		port = strtok_r(NULL, ":", &r[1]);
 		hash = strtok_r(NULL, "/", &r[0]);
 		// Take the guy's hostname and hash and get him a list of people with the same hash
-		add_seeder(me, host, port, hash);
 		send_response(me, SR_SEEDERS, hash);
+		add_seeder(me, host, port, hash);
 	}
 	else if(strcmp(word, "STOPPED") == 0)
 	{
@@ -417,8 +422,8 @@ void handle_request(client_struct* me, char* input_string)
 		port = strtok_r(NULL, ":", &r[1]);
 		hash = strtok_r(NULL, "/", &r[0]);
 		// Take the guy's hostname and hash and add it to the table
-		add_seeder(me, host, port, hash);
 		send_response(me, SR_SUCCESS, NULL);
+		add_seeder(me, host, port, hash);
 	}
 	else
 		printf("ERROR: Received misformed request\n");
@@ -452,7 +457,7 @@ void* process_request(void* cstruct_in)
 		}
 		chars_read = read(me->socket, read_buffer + read_offset, buffer_size - read_offset);
 		read_offset += chars_read;
-	} while(chars_read > 0);
+	} while(chars_read > 0 && !memchr(read_buffer, '\0', buffer_size));
 	if(chars_read == -1)
 		printf("\t[%d]: recv() error: %s\n", me->id, strerror(errno));	
 	//str_trim(read_buffer);
@@ -461,7 +466,7 @@ void* process_request(void* cstruct_in)
 	handle_request(me, read_buffer);
 	
 	// Close connection
-	printht(me->table);
+	//printht(me->table);
 	printf("\t[%d]: Connection closed.\n", me->id);
 	close(me->socket);
 	me->done = true;

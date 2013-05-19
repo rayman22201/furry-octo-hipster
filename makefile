@@ -1,13 +1,16 @@
 all: tracker client
 
 tracker: tracker.o
-	gcc -pthread -o ./bin/tracker.o ./tracker/tracker.c
+	gcc -pthread tracker.o -o ./bin/tracker
+
+client: client.o
+	gcc -pthread client.o -o ./bin/client
 
 tracker.o: ./tracker/tracker.c
 	gcc -c ./tracker/tracker.c
 
-client: ./client/client.c
-	gcc ./client/client.c -lpthread -o ./bin/client.o -std=c99
-	
+client.o: ./client/client.c
+	gcc -c -std=c99 ./client/client.c
+
 clean:
-	rm -rf ./bin/*.o
+	rm -rf ./bin/* ./*.o
