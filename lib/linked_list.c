@@ -349,12 +349,12 @@ void linkedList_free_function(void* curHash)
 {
   linkedListStruct* elementList;
   elementList = (linkedListStruct*)curHash;
-  linkedList_free(elementList);
+  linkedList_free_ts(elementList);
 }
 
 void linkedList_init_function(void** curHash)
 {
-  (*curHash) = linkedList_newList();
+  (*curHash) = linkedList_newList_ts();
 }
 
 void linkedList_add_function(void** curHash, void* newElement)
@@ -363,7 +363,7 @@ void linkedList_add_function(void** curHash, void* newElement)
   elementList = (linkedListStruct*)(*curHash);
 
   //add the node to the list
-  linkedList_addNode(elementList, newElement);
+  linkedList_addNode_ts(elementList, newElement);
 }
 
 void linkedList_remove_function(void** curHash, void* elementToRemove)
@@ -372,6 +372,6 @@ void linkedList_remove_function(void** curHash, void* elementToRemove)
   {
     linkedListStruct* elementList;
     elementList = (linkedListStruct*)(*curHash);
-    linkedList_findAndRemoveNode(elementList, elementToRemove);
+    linkedList_findAndRemoveNode_ts(elementList, elementToRemove);
   }
 }
